@@ -1,0 +1,100 @@
+### Transaction Intelligence API — runnable examples
+### VS Code "REST Client" or JetBrains HTTP Client. Run "login" first.
+
+@base = http://localhost:3100/api
+
+### Health (no auth)
+GET {{base}}/health
+
+### Login (seeded demo user)
+# @name login
+POST {{base}}/auth/login
+Content-Type: application/json
+
+{ "email": "amaka@ofada.test", "password": "Password123!" }
+
+###
+@token = {{login.response.body.accessToken}}
+
+### Who am I
+GET {{base}}/auth/me
+Authorization: Bearer {{token}}
+
+### Accounts (copy an id into @accountId below)
+# @name accounts
+GET {{base}}/accounts
+Authorization: Bearer {{token}}
+
+###
+@accountId = {{accounts.response.body.$[0].id}}
+
+### Import one transaction (send twice: 201 then 200 duplicate)
+POST {{base}}/transactions
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{
+  "externalReference": "DEMO-0001",
+  "accountId": "{{accountId}}",
+  "amount": "12999.75",
+  "direction": "DEBIT",
+  "description": "SLACK TECHNOLOGIES SUBSCRIPTION",
+  "merchant": "Slack",
+  "date": "2026-11-10"
+}
+
+### Batch import with partial failures and an Idempotency-Key (send twice: second is replayed)
+POST {{base}}/transactions/batch
+Authorization: Bearer {{token}}
+Content-Type: application/json
+Idempotency-Key: demo-batch-0001
+
+{
+  "transactions": [
+    { "externalReference": "DEMO-0002", "accountId": "{{accountId}}", "amount": "250000.00", "direction": "CREDIT", "description": "NIP TRF FROM CHOPLIFE RESTAURANTS LTD/INV-20999", "date": "2026-11-11" },
+    { "externalReference": "DEMO-0003", "accountId": "{{accountId}}", "amount": 99.5, "direction": "DEBIT", "description": "JSON number amount is rejected", "date": "2026-11-11" },
+    { "externalReference": "DEMO-0004", "accountId": "{{accountId}}", "amount": "45000.00", "direction": "DEBIT", "description": "TRF TO MAMA CHIOMA CATERING", "date": "2026-11-12" }
+  ]
+}
+
+### List: newest first, 10 per page
+GET {{base}}/transactions?limit=10
+Authorization: Bearer {{token}}
+
+### List: search + filters
+GET {{base}}/transactions?q=paystack&direction=CREDIT&minAmount=1000000.00&limit=5
+Authorization: Bearer {{token}}
+
+### List: only transactions needing review
+GET {{base}}/transactions?flagged=true
+Authorization: Bearer {{token}}
+
+### Transaction detail (paste an id)
+GET {{base}}/transactions/00000000-0000-0000-0000-000000000000
+Authorization: Bearer {{token}}
+
+### Correct a category (paste an id; expectedVersion from detail)
+PATCH {{base}}/transactions/00000000-0000-0000-0000-000000000000/category
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{ "category": "RENT", "note": "This is the shop rent", "expectedVersion": 1 }
+
+### Open review flags
+GET {{base}}/review/flags?status=OPEN&limit=20
+Authorization: Bearer {{token}}
+
+### Flag counts by type
+GET {{base}}/review/summary
+Authorization: Bearer {{token}}
+
+### Resolve or dismiss a flag (paste an id)
+PATCH {{base}}/review/flags/00000000-0000-0000-0000-000000000000
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{ "status": "DISMISSED", "note": "Expected annual equipment purchase" }
+
+### Dashboard for a period
+GET {{base}}/dashboard?from=2026-08-01&to=2026-11-30
+Authorization: Bearer {{token}}

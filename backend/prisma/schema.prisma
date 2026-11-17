@@ -1,0 +1,276 @@
+// Transaction Intelligence Platform — data model.
+//
+// Conventions
+// - Every tenant-owned table carries organisation_id. Child tables reference
+//   their parent through a composite foreign key (organisation_id, parent_id),
+//   so the database itself refuses to link rows across organisations.
+// - Money is stored as BIGINT minor units (kobo for NGN). Never floats.
+// - Extra constraints Prisma cannot express (CHECKs, extensions, RLS) live in
+//   the migration SQL; see prisma/migrations/*/migration.sql.
+
+generator client {
+  provider            = "prisma-client"
+  output              = "../src/generated/prisma"
+  moduleFormat        = "esm"
+  importFileExtension = "js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum Direction {
+  CREDIT
+  DEBIT
+}
+
+enum Category {
+  REVENUE
+  PAYROLL
+  SOFTWARE
+  MARKETING
+  TRAVEL
+  UTILITIES
+  RENT
+  TAX
+  TRANSFERS
+  BANK_FEES
+  OTHER
+}
+
+/// Who or what produced a category decision.
+enum CategorySource {
+  RULES // deterministic keyword rules
+  AI // language-model provider
+  LEARNED // reused from an earlier confident or human-confirmed decision on the same description
+  FALLBACK // provider kept failing; best-effort rules guess
+  MANUAL // a person corrected it
+}
+
+enum ClassificationStatus {
+  PENDING
+  PROCESSING
+  CLASSIFIED
+  FAILED
+}
+
+enum FlagType {
+  POSSIBLE_DUPLICATE
+  LARGE_AMOUNT
+  LOW_CONFIDENCE
+  UNEXPECTED_CATEGORY
+  CLASSIFICATION_FAILED
+}
+
+enum FlagStatus {
+  OPEN
+  RESOLVED
+  DISMISSED
+}
+
+enum IdempotencyStatus {
+  IN_PROGRESS
+  COMPLETED
+}
+
+model Organisation {
+  id        String   @id @default(uuid()) @db.Uuid
+  name      String   @db.VarChar(200)
+  slug      String   @unique @db.VarChar(100)
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  users                User[]
+  accounts             Account[]
+  transactions         Transaction[]
+  classificationEvents ClassificationEvent[]
+  reviewFlags          ReviewFlag[]
+  importBatches        ImportBatch[]
+  idempotencyKeys      IdempotencyKey[]
+
+  @@map("organisations")
+}
+
+model User {
+  id             String   @id @default(uuid()) @db.Uuid
+  organisationId String   @map("organisation_id") @db.Uuid
+  /// Stored lower-cased; unique across the platform so login needs no tenant hint.
+  email          String   @unique @db.VarChar(254)
+  name           String   @db.VarChar(200)
+  passwordHash   String   @map("password_hash")
+  createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  organisation         Organisation          @relation(fields: [organisationId], references: [id], onDelete: Restrict)
+  classificationEvents ClassificationEvent[]
+  resolvedFlags        ReviewFlag[]
+  importBatches        ImportBatch[]
+
+  @@unique([organisationId, id])
+  @@map("users")
+}
+
+model Account {
+  id             String   @id @default(uuid()) @db.Uuid
+  organisationId String   @map("organisation_id") @db.Uuid
+  name           String   @db.VarChar(200)
+  bankName       String   @map("bank_name") @db.VarChar(100)
+  accountNumber  String   @map("account_number") @db.VarChar(20)
+  currency       String   @default("NGN") @db.Char(3)
+  createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  organisation Organisation  @relation(fields: [organisationId], references: [id], onDelete: Restrict)
+  transactions Transaction[]
+
+  @@unique([organisationId, id])
+  @@unique([organisationId, bankName, accountNumber])
+  @@map("accounts")
+}
+
+model Transaction {
+  id                String    @id @default(uuid()) @db.Uuid
+  organisationId    String    @map("organisation_id") @db.Uuid
+  accountId         String    @map("account_id") @db.Uuid
+  /// The bank's / source system's reference. Unique per account: the natural idempotency key.
+  externalReference String    @map("external_reference") @db.VarChar(128)
+  /// Always positive, in minor units (kobo). Sign comes from `direction`.
+  amountMinor       BigInt    @map("amount_minor")
+  currency          String    @db.Char(3)
+  direction         Direction
+  description       String    @db.VarChar(500)
+  /// Normalised description (lower-case, digits and punctuation folded) used to recall past decisions.
+  descriptionKey    String    @map("description_key") @db.VarChar(200)
+  merchant          String?   @db.VarChar(200)
+  transactionDate   DateTime  @map("transaction_date") @db.Timestamptz(3)
+
+  // Current effective classification. Full history lives in classification_events.
+  category                 Category?
+  categorySource           CategorySource?      @map("category_source")
+  categoryConfidence       Decimal?             @map("category_confidence") @db.Decimal(4, 3)
+  // Classification work queue (claimed with FOR UPDATE SKIP LOCKED).
+  classificationStatus     ClassificationStatus @default(PENDING) @map("classification_status")
+  classificationAttempts   Int                  @default(0) @map("classification_attempts")
+  nextClassificationAt     DateTime             @default(now()) @map("next_classification_at") @db.Timestamptz(3)
+  classificationLeaseUntil DateTime?            @map("classification_lease_until") @db.Timestamptz(3)
+  lastClassificationError  String?              @map("last_classification_error") @db.VarChar(500)
+  /// Null until the rule-based review detectors have run on this row.
+  reviewCheckedAt          DateTime?            @map("review_checked_at") @db.Timestamptz(3)
+  /// Optimistic-concurrency version for manual edits.
+  version                  Int                  @default(1)
+
+  importBatchId String?  @map("import_batch_id") @db.Uuid
+  createdAt     DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt     DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  organisation         Organisation          @relation(fields: [organisationId], references: [id], onDelete: Restrict)
+  account              Account               @relation(fields: [organisationId, accountId], references: [organisationId, id], onDelete: Restrict)
+  importBatch          ImportBatch?          @relation(fields: [importBatchId], references: [id], onDelete: SetNull)
+  classificationEvents ClassificationEvent[]
+  reviewFlags          ReviewFlag[]
+
+  @@unique([organisationId, accountId, externalReference])
+  @@unique([organisationId, id])
+  // Default listing + keyset pagination.
+  @@index([organisationId, transactionDate(sort: Desc), id(sort: Desc)])
+  // Listing filtered by account.
+  @@index([organisationId, accountId, transactionDate(sort: Desc), id(sort: Desc)])
+  // Category filter and dashboard aggregation.
+  @@index([organisationId, category, transactionDate])
+  // Recalling past decisions for identical descriptions.
+  @@index([organisationId, descriptionKey])
+  // Duplicate detection lookups.
+  @@index([organisationId, accountId, amountMinor, transactionDate])
+  // Work queues.
+  @@index([classificationStatus, nextClassificationAt])
+  @@index([reviewCheckedAt, createdAt])
+  // Free-text search (ILIKE '%q%') via pg_trgm.
+  @@index([description(ops: raw("gin_trgm_ops"))], type: Gin, map: "transactions_description_trgm_idx")
+  @@index([merchant(ops: raw("gin_trgm_ops"))], type: Gin, map: "transactions_merchant_trgm_idx")
+  @@index([externalReference(ops: raw("gin_trgm_ops"))], type: Gin, map: "transactions_external_reference_trgm_idx")
+  @@map("transactions")
+}
+
+/// Append-only audit trail of every automated and manual category decision.
+model ClassificationEvent {
+  id               String         @id @default(uuid()) @db.Uuid
+  organisationId   String         @map("organisation_id") @db.Uuid
+  transactionId    String         @map("transaction_id") @db.Uuid
+  category         Category
+  previousCategory Category?      @map("previous_category")
+  source           CategorySource
+  /// e.g. "rules:v1", "gemini:gemini-3.5-flash-lite", "mock-ai"
+  provider         String         @db.VarChar(100)
+  confidence       Decimal?       @db.Decimal(4, 3)
+  /// Model rationale, matched rule, or the person's note.
+  rationale        String?        @db.VarChar(1000)
+  actorUserId      String?        @map("actor_user_id") @db.Uuid
+  createdAt        DateTime       @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  organisation Organisation @relation(fields: [organisationId], references: [id], onDelete: Restrict)
+  transaction  Transaction  @relation(fields: [organisationId, transactionId], references: [organisationId, id], onDelete: Restrict)
+  actor        User?        @relation(fields: [actorUserId], references: [id], onDelete: Restrict)
+
+  @@index([organisationId, transactionId, createdAt])
+  @@map("classification_events")
+}
+
+model ReviewFlag {
+  id                   String     @id @default(uuid()) @db.Uuid
+  organisationId       String     @map("organisation_id") @db.Uuid
+  transactionId        String     @map("transaction_id") @db.Uuid
+  type                 FlagType
+  status               FlagStatus @default(OPEN)
+  /// Plain-language explanation shown to reviewers.
+  reason               String     @db.VarChar(1000)
+  details              Json?
+  relatedTransactionId String?    @map("related_transaction_id") @db.Uuid
+  resolvedById         String?    @map("resolved_by_id") @db.Uuid
+  resolvedAt           DateTime?  @map("resolved_at") @db.Timestamptz(3)
+  resolutionNote       String?    @map("resolution_note") @db.VarChar(1000)
+  createdAt            DateTime   @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  organisation Organisation @relation(fields: [organisationId], references: [id], onDelete: Restrict)
+  transaction  Transaction  @relation(fields: [organisationId, transactionId], references: [organisationId, id], onDelete: Restrict)
+  resolvedBy   User?        @relation(fields: [resolvedById], references: [id], onDelete: Restrict)
+
+  /// A detector raises each type at most once per transaction (idempotent re-runs).
+  @@unique([transactionId, type])
+  @@index([organisationId, status, createdAt(sort: Desc)])
+  @@index([organisationId, transactionId])
+  @@map("review_flags")
+}
+
+model ImportBatch {
+  id             String   @id @default(uuid()) @db.Uuid
+  organisationId String   @map("organisation_id") @db.Uuid
+  createdById    String?  @map("created_by_id") @db.Uuid
+  totalCount     Int      @default(0) @map("total_count")
+  createdCount   Int      @default(0) @map("created_count")
+  duplicateCount Int      @default(0) @map("duplicate_count")
+  rejectedCount  Int      @default(0) @map("rejected_count")
+  createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  organisation Organisation  @relation(fields: [organisationId], references: [id], onDelete: Restrict)
+  createdBy    User?         @relation(fields: [createdById], references: [id], onDelete: SetNull)
+  transactions Transaction[]
+
+  @@index([organisationId, createdAt])
+  @@map("import_batches")
+}
+
+/// Stored responses for the Idempotency-Key header.
+model IdempotencyKey {
+  organisationId String            @map("organisation_id") @db.Uuid
+  key            String            @db.VarChar(200)
+  /// SHA-256 of method + path + body; a key reused with a different body is rejected.
+  requestHash    String            @map("request_hash") @db.Char(64)
+  status         IdempotencyStatus @default(IN_PROGRESS)
+  responseStatus Int?              @map("response_status")
+  responseBody   Json?             @map("response_body")
+  createdAt      DateTime          @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt      DateTime          @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  organisation Organisation @relation(fields: [organisationId], references: [id], onDelete: Restrict)
+
+  @@id([organisationId, key])
+  @@index([createdAt])
+  @@map("idempotency_keys")
+}
