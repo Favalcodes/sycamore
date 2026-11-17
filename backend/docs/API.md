@@ -4,6 +4,8 @@ Base URL: `http://localhost:3100/api`. Every endpoint except `POST /auth/login` 
 
 The organisation you act for comes from the token. No request parameter can select another organisation, and another organisation's ids answer `404`, exactly as ids that do not exist.
 
+**Interactive docs:** with the API running, open **Swagger UI** at `http://localhost:3100/api/docs`. The OpenAPI JSON is at `/api/docs-json`.
+
 Runnable examples for each endpoint are in [`requests.http`](../requests.http). It works with the VS Code REST Client and JetBrains HTTP Client.
 
 ## Conventions

@@ -70,7 +70,7 @@ npm run dev                 # http://localhost:5173  (proxies /api to :3100)
 ```bash
 cd backend
 npm test                    # 103 unit tests, no database needed
-npm run test:e2e            # 29 integration tests against a real Postgres
+npm run test:e2e            # 31 integration tests against a real Postgres
 npm run lint
 
 cd ../frontend
@@ -82,8 +82,11 @@ npm run type-check
 
 ### API documentation
 
-- [`backend/docs/API.md`](backend/docs/API.md): every endpoint, its parameters, status codes and error shape.
-- [`backend/requests.http`](backend/requests.http): a runnable collection for the VS Code REST Client or the JetBrains HTTP Client.
+- **Swagger UI:** <http://localhost:3100/api/docs>. It is interactive: call `POST /api/auth/login`, click **Authorize**, paste the `accessToken`, and try any endpoint. The OpenAPI JSON is at `/api/docs-json` (importable into Postman or Insomnia).
+  - The request bodies, query strings and path parameters come from the **same Zod schemas the API validates with**, so the docs cannot drift from what the API accepts.
+  - An integration test checks the document.
+- [`backend/docs/API.md`](backend/docs/API.md): conventions and status codes in prose.
+- [`backend/requests.http`](backend/requests.http): a runnable collection for the VS Code REST Client or JetBrains HTTP Client.
 
 ---
 
@@ -399,5 +402,5 @@ Then follow up with the customer on what was changed and the before-and-after nu
 ## Testing
 
 - **Backend unit tests (103)**: the provider layer (shared LLM base class, Gemini against a fake SDK client, registry selection and config errors), money parsing and formatting (including ₦12,999.75 and values above `MAX_SAFE_INTEGER`), the rules (Nigerian banking descriptions), the circuit breaker and rate limiter, the classification pipeline's behaviour under timeout, outage, rate limit and invalid output, model-output validation, request validation, cursors and backoff.
-- **Backend integration tests (29, real Postgres)**: tenant isolation at the API, client and database layers; money end to end; concurrent and racing imports; Idempotency-Key replay and misuse; partial batch failure; keyset pagination; filters; correction audit trail and optimistic locking; decision memory; an AI outage and recovery; fallback after exhausted attempts; a human correction during an in-flight AI call; duplicate and large-amount explanations.
+- **Backend integration tests (31, real Postgres)**: the generated Swagger/OpenAPI document; tenant isolation at the API, client and database layers; money end to end; concurrent and racing imports; Idempotency-Key replay and misuse; partial batch failure; keyset pagination; filters; correction audit trail and optimistic locking; decision memory; an AI outage and recovery; fallback after exhausted attempts; a human correction during an in-flight AI call; duplicate and large-amount explanations.
 - **Frontend**: exact money formatting and the password visibility toggle.

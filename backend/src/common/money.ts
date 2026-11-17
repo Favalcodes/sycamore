@@ -21,7 +21,7 @@ const MINOR_UNIT_DIGITS: Record<string, number> = {
 export const SUPPORTED_CURRENCIES = Object.keys(MINOR_UNIT_DIGITS);
 
 /** Up to 15 whole digits (< 1 quadrillion) and at most 2 decimal places. */
-const DECIMAL_AMOUNT = /^(0|[1-9]\d{0,14})(\.\d{1,2})?$/;
+export const DECIMAL_AMOUNT = /^(0|[1-9]\d{0,14})(\.\d{1,2})?$/;
 
 export class InvalidAmountError extends Error {}
 

@@ -1,5 +1,11 @@
 import { Controller, Get, ServiceUnavailableException } from '@nestjs/common';
 import { SkipThrottle } from '@nestjs/throttler';
+import {
+  ApiOkResponse,
+  ApiOperation,
+  ApiServiceUnavailableResponse,
+  ApiTags,
+} from '@nestjs/swagger';
 import { Public } from '../auth/auth.decorators.js';
 import { ClassificationService } from '../classification/classification.service.js';
 import { PrismaService } from '../prisma/prisma.service.js';
@@ -8,6 +14,7 @@ import { PrismaService } from '../prisma/prisma.service.js';
  * Liveness/readiness plus the operational signals that matter during an AI
  * outage: circuit state and queue depth. Aggregate counts only — no tenant data.
  */
+@ApiTags('Health')
 @Controller('health')
 @SkipThrottle()
 export class HealthController {
@@ -16,6 +23,13 @@ export class HealthController {
     private readonly classification: ClassificationService,
   ) {}
 
+  @ApiOperation({
+    summary: 'Health and classification pipeline status',
+    description:
+      'Database status, AI provider, circuit-breaker state, rate-limit wait and queue depth. No authentication; aggregate counts only.',
+  })
+  @ApiOkResponse({ description: 'Healthy' })
+  @ApiServiceUnavailableResponse({ description: 'Database unreachable' })
   @Public()
   @Get()
   async check() {

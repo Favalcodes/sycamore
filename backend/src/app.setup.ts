@@ -1,6 +1,7 @@
 import { StandardSchemaValidationPipe } from '@nestjs/common';
 import type { NestExpressApplication } from '@nestjs/platform-express';
 import helmet from 'helmet';
+import { setupSwagger } from './swagger.js';
 
 /** HTTP pipeline shared by main.ts and the e2e tests, so tests exercise the real thing. */
 export function configureApp(
@@ -17,5 +18,6 @@ export function configureApp(
   });
   app.useGlobalPipes(new StandardSchemaValidationPipe());
   app.setGlobalPrefix('api');
+  setupSwagger(app);
   return app;
 }

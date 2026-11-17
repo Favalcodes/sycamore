@@ -5,7 +5,7 @@ import {
   Direction,
 } from '../generated/prisma/enums.js';
 import {
-  isValidAmountString,
+  DECIMAL_AMOUNT,
   parseAmountToMinor,
   SUPPORTED_CURRENCIES,
 } from '../common/money.js';
@@ -23,10 +23,16 @@ const amountField = z
     error:
       'amount must be a decimal string such as "12999.75", not a JSON number',
   })
-  .refine(
-    isValidAmountString,
+  .trim()
+  .regex(
+    DECIMAL_AMOUNT,
     'amount must be a positive decimal with at most 2 decimal places, e.g. "12999.75"',
   )
+  .meta({
+    description:
+      'Decimal string in major units, at most 2 decimal places. JSON numbers are rejected to avoid floating-point loss.',
+    examples: ['12999.75'],
+  })
   .transform((v) => parseAmountToMinor(v))
   .refine((minor) => minor > 0n, 'amount must be greater than zero');
 
@@ -38,6 +44,11 @@ const dateField = z
   .union([z.iso.date(), z.iso.datetime({ offset: true })], {
     error: 'date must be an ISO date (YYYY-MM-DD) or date-time with offset',
   })
+  .meta({
+    description:
+      'ISO date (read as midnight in Africa/Lagos) or ISO date-time with offset. At most one day in the future.',
+    examples: ['2026-11-03'],
+  })
   .transform((v) => new Date(v.length === 10 ? `${v}T00:00:00+01:00` : v))
   .refine((d) => d.getUTCFullYear() >= 2000, 'date is too far in the past')
   .refine(
@@ -46,8 +57,19 @@ const dateField = z
   );
 
 export const transactionInputSchema = z.object({
-  externalReference: z.string().trim().min(1).max(128),
-  accountId: z.uuid(),
+  externalReference: z
+    .string()
+    .trim()
+    .min(1)
+    .max(128)
+    .meta({
+      description:
+        "The bank's reference. Unique per account; re-sending it is idempotent.",
+      examples: ['GTB-2026-11-000123'],
+    }),
+  accountId: z
+    .uuid()
+    .meta({ description: 'One of your accounts (GET /api/accounts).' }),
   amount: amountField,
   currency: z
     .preprocess(upper, z.enum(SUPPORTED_CURRENCIES as [string, ...string[]]))
@@ -61,26 +83,59 @@ export type TransactionInput = z.infer<typeof transactionInputSchema>;
 
 export const MAX_BATCH_SIZE = 1000;
 
-/** The envelope is validated strictly; items are validated one by one so one bad row cannot sink the batch. */
+/** JSON Schema of one import item as the client sends it, for documentation. */
+const { $schema: _ignored, ...transactionItemDoc } = z.toJSONSchema(
+  transactionInputSchema,
+  {
+    io: 'input',
+    unrepresentable: 'any',
+  },
+);
+
+/**
+ * The envelope is validated strictly; items are validated one by one so one
+ * bad row cannot sink the batch. Items are typed `unknown` for that reason,
+ * with the item schema attached as documentation.
+ */
 export const batchImportSchema = z.object({
-  transactions: z.array(z.unknown()).min(1).max(MAX_BATCH_SIZE),
+  transactions: z
+    .array(z.unknown().meta(transactionItemDoc))
+    .min(1)
+    .max(MAX_BATCH_SIZE)
+    .meta({ description: '1–1000 transactions; each gets its own result.' }),
 });
 
 const optionalAmount = z
   .string()
-  .refine(isValidAmountString, 'must be a decimal amount')
+  .trim()
+  .regex(DECIMAL_AMOUNT, 'must be a decimal amount')
+  .meta({ description: 'Decimal string in naira, e.g. "1000000.00"' })
   .transform((v) => parseAmountToMinor(v))
   .optional();
 
 const optionalDate = z
   .union([z.iso.date(), z.iso.datetime({ offset: true })])
+  .meta({ description: 'ISO date (YYYY-MM-DD) or date-time with offset' })
   .transform((v) => new Date(v.length === 10 ? `${v}T00:00:00+01:00` : v))
   .optional();
 
 export const listTransactionsQuerySchema = z.object({
   limit: z.coerce.number().int().min(1).max(100).default(25),
-  cursor: z.string().max(200).optional(),
-  q: z.string().trim().min(1).max(100).optional(),
+  cursor: z
+    .string()
+    .max(200)
+    .meta({ description: '`pageInfo.nextCursor` from the previous page' })
+    .optional(),
+  q: z
+    .string()
+    .trim()
+    .min(1)
+    .max(100)
+    .meta({
+      description:
+        'Case-insensitive search in description, merchant and reference',
+    })
+    .optional(),
   accountId: z.uuid().optional(),
   direction: z.preprocess(upper, z.enum(Direction)).optional(),
   /** A category, or UNCATEGORISED for transactions with none yet. */
@@ -93,6 +148,10 @@ export const listTransactionsQuerySchema = z.object({
   /** true: only transactions with an open review flag. */
   flagged: z
     .enum(['true', 'false'])
+    .meta({
+      description:
+        'true: only transactions with an open review flag; false: only those without',
+    })
     .transform((v) => v === 'true')
     .optional(),
   from: optionalDate,
